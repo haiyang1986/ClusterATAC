@@ -18,11 +18,8 @@ from os.path import splitext, basename, exists, abspath, isfile, getsize
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn import preprocessing
-from sklearn.cluster import KMeans, AgglomerativeClustering, SpectralClustering
+from sklearn.cluster import KMeans, SpectralClustering
 from sklearn import mixture
-import statsmodels.api as sm
-from scipy import interp
-from scipy import stats
 from keras import backend as K
 from keras.layers import Input, Dense, Lambda, Layer, Add, Multiply, BatchNormalization, Dropout, Activation, LeakyReLU, \
     merge
@@ -127,9 +124,9 @@ class ClusterATAC(object):
         self.batch_size = 128
 
     # feature extract
-    def latent(self, df_ori, save_file, n_components=100, b_decomposition=True):
+    def feature_extract(self, df_ori, save_file, n_components=100, b_decomposition=True):
         if b_decomposition:
-            X = self.wae(df_ori, n_components)
+            X = self.encoder_gan(df_ori, n_components)
             fea = pd.DataFrame(data=X, index=df_ori.index,
                                columns=map(lambda x: 'v' + str(x), range(X.shape[1])))
         else:
@@ -140,7 +137,7 @@ class ClusterATAC(object):
         return True
 
     def cluster(self, df_ori, n_components=200, n_clusters=18):
-        X = self.wae(df_ori, n_components)
+        X = self.encoder_gan(df_ori, n_components)
         model = mixture.GaussianMixture(n_components=n_clusters, covariance_type='diag')
         return model.fit_predict(X)
 
@@ -148,7 +145,7 @@ class ClusterATAC(object):
         X.fillna(X.mean())
         return X
 
-    def wae(self, df, n_components=100):
+    def encoder_gan(self, df, n_components=100):
         wae = Encoder_GAN(df.shape, n_components)
         return wae.train(df, 60, 64)
 
@@ -169,57 +166,23 @@ class ClusterATAC(object):
 
 def main(argv=sys.argv):
     parser = argparse.ArgumentParser(description='ClusterATAC v1.0')
-    parser.add_argument("-m", dest='run_mode', default="eval", help="run_mode: train, test")
     parser.add_argument("-i", dest='file_input', default="./TCGA_ATAC_peak_Log2Counts_dedup_sample.txt",
                         help="file input")
-    parser.add_argument("-o", dest='output_path', default="./score/", help="file output")
+    parser.add_argument("-m", dest='run_mode', default="feature", help="run_mode: feature, cluster")
     parser.add_argument("-n", dest='cluster_num', type=int, default=18, help="cluster num")
+    parser.add_argument("-o", dest='output_path', default="./score/", help="file output")
+    parser.add_argument("-p", dest='other_approach', default="spectral", help="kmeans, spectral, tsne_gmm, tsne")
     args = parser.parse_args()
     model_path = './model/'
     atac = ClusterATAC(model_path)
 
-    if args.run_mode == 'clinic_data':
-        clinical_input = '../data/clinical_PANCAN_patient_with_followup.tsv.gz'
-        file_input = '../data/TCGA_ATAC_peak_Log2Counts_dedup_sample.gz'
-        base_file = splitext(basename(clinical_input))[0]
-        clinical_save_file = './' + base_file + '.clinical'
-        base_file = splitext(basename(args.file_input))[0]
-        out_file = './' + base_file
-        # df need to be sorted first
-        df = pd.read_csv(clinical_input, header=0, sep='\t',
-                         usecols=['bcr_patient_barcode', 'acronym', 'vital_status', 'days_to_death',
-                                  'days_to_last_followup'])
-        df['status'] = np.where(df['vital_status'] == 'Dead', 1, 0)
-        df['days'] = df.apply(lambda r: r['days_to_death'] if r['status'] == 1 else r['days_to_last_followup'], axis=1)
-        df = df.loc[:, ['bcr_patient_barcode', 'acronym', 'status', 'days']]
-        X1 = pd.read_csv(file_input, header=0, index_col=0, sep='\t', compression='gzip', nrows=1)
-        ids = []
-        dic = {}
-        for line in list(X1):
-            tmps = line.rstrip().split('-')
-            txt = '-'.join(tmps[0:-1])
-            ids.append(txt)
-            dic[txt] = line.rstrip()
-        df = df[df['bcr_patient_barcode'].isin(ids)]
-        # handle errors
-        df.loc[df.days == '[Discrepancy]', 'days'] = 766.0
-        df = df.astype(
-            dtype={"bcr_patient_barcode": str, 'acronym': str, "status": int, "days": float})
-        df['days'] = df['days'].astype(int)
-        samples = []
-        samples_short = []
-        for sample in list(df['bcr_patient_barcode']):
-            samples.append(dic[sample])
-            samples_short.append(sample)
-        df.to_csv(clinical_save_file, header=True, index=False, sep='\t')
-
-    elif args.run_mode == 'feature':
+    if args.run_mode == 'feature':
         base_file = splitext(basename(args.file_input))[0]
         fea_save_file = './fea/' + base_file + '.fea'
         clinical_save_file = './clinical_PANCAN_patient_with_followup.tsv.clinical'
         # df need to be sorted first
         df = pd.read_csv(args.file_input, header=0, index_col=0, sep='\t').T
-        atac.latent(df, fea_save_file, n_components=200)
+        atac.feature_extract(df, fea_save_file, n_components=200)
 
     elif args.run_mode == 'cluster':
         base_file = splitext(basename(args.file_input))[0]
@@ -287,7 +250,7 @@ def main(argv=sys.argv):
             print('file does not exist!')
 
     elif args.run_mode == 'compare':
-        method = 'spectral'
+        method = args.other_approach
         base_file = splitext(basename(args.file_input))[0]
         fea_compare_file = './fea/' + base_file + '.compare'
         tsne_input = './fea/' + base_file + '.tsne'
@@ -362,6 +325,41 @@ def main(argv=sys.argv):
             fea.to_csv(out_file, header=True, index=True, sep='\t')
         else:
             print('file does not exist!')
+
+    elif args.run_mode == 'clinical_data':
+        clinical_input = '../data/clinical_PANCAN_patient_with_followup.tsv.gz'
+        file_input = '../data/TCGA_ATAC_peak_Log2Counts_dedup_sample.gz'
+        base_file = splitext(basename(clinical_input))[0]
+        clinical_save_file = './' + base_file + '.clinical'
+        base_file = splitext(basename(args.file_input))[0]
+        out_file = './' + base_file
+        # df need to be sorted first
+        df = pd.read_csv(clinical_input, header=0, sep='\t',
+                         usecols=['bcr_patient_barcode', 'acronym', 'vital_status', 'days_to_death',
+                                  'days_to_last_followup'])
+        df['status'] = np.where(df['vital_status'] == 'Dead', 1, 0)
+        df['days'] = df.apply(lambda r: r['days_to_death'] if r['status'] == 1 else r['days_to_last_followup'], axis=1)
+        df = df.loc[:, ['bcr_patient_barcode', 'acronym', 'status', 'days']]
+        X1 = pd.read_csv(file_input, header=0, index_col=0, sep='\t', compression='gzip', nrows=1)
+        ids = []
+        dic = {}
+        for line in list(X1):
+            tmps = line.rstrip().split('-')
+            txt = '-'.join(tmps[0:-1])
+            ids.append(txt)
+            dic[txt] = line.rstrip()
+        df = df[df['bcr_patient_barcode'].isin(ids)]
+        # handle errors
+        df.loc[df.days == '[Discrepancy]', 'days'] = 766.0
+        df = df.astype(
+            dtype={"bcr_patient_barcode": str, 'acronym': str, "status": int, "days": float})
+        df['days'] = df['days'].astype(int)
+        samples = []
+        samples_short = []
+        for sample in list(df['bcr_patient_barcode']):
+            samples.append(dic[sample])
+            samples_short.append(sample)
+        df.to_csv(clinical_save_file, header=True, index=False, sep='\t')
 
     elif args.run_mode == 'K_18':
         base_file = splitext(basename(args.file_input))[0]
