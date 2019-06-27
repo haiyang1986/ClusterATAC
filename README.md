@@ -11,12 +11,12 @@ python ClusterATAC.py -m feature -i ./TCGA_ATAC_peak_Log2Counts_dedup_sample.txt
 ClusterATAC's GMM clustering module is used as follows:  
 ```{r}
 python ClusterATAC.py -m cluster -n 22 -i ./TCGA_ATAC_peak_Log2Counts_dedup_sample.txt  
-# record the corresponding class label for each sample. The output file is ./ TCGA_ATAC_peak_Log2Counts_dedup_sample.out  
+# record the corresponding class label for each sample and the output file is ./ TCGA_ATAC_peak_Log2Counts_dedup_sample.out  
 ```
 ClusterATAC's performance comparison module (using the spectral clustering method as an example) is used as follows: 
 ```{r} 
 python ClusterATAC.py -m compare -p spectral -i ./TCGA_ATAC_peak_Log2Counts_dedup_sample.txt  
-# record the corresponding class label for each sample. The output file is ./ TCGA_ATAC_peak_Log2Counts_dedup_sample.spectral
+# record the corresponding class label for each sample and the output file is ./ TCGA_ATAC_peak_Log2Counts_dedup_sample.spectral
 ```  
 ClusterATAC is based on the Python pregame language. The implementation of the generative adversarial network was based on the open source library Keras 2.2.4 and Tensorflow 1.12.0 (GPU version). After testing, this framework has been working properly on CentOS Linux release 7.6. Due to the high dimensionality of the raw data, the size of the neural network is huge. We used the NVIDIA TITAN XP (12G) for the model training. When the GPU's memory is not enough to support the running of the tool, we suggest simplifying the network structure of the encoder.
 
