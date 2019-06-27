@@ -180,7 +180,6 @@ def main(argv=sys.argv):
         base_file = splitext(basename(args.file_input))[0]
         fea_save_file = './fea/' + base_file + '.fea'
         clinical_save_file = './clinical_PANCAN_patient_with_followup.tsv.clinical'
-        # df need to be sorted first
         df = pd.read_csv(args.file_input, header=0, index_col=0, sep='\t').T
         atac.feature_extract(df, fea_save_file, n_components=200)
 
