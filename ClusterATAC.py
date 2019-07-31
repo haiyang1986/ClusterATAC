@@ -3,39 +3,38 @@ import sys
 import numpy as np
 import random
 import time
+import os
+os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 import tensorflow as tf
 from keras import backend as K
 import string
-import os
-from tempfile import mkdtemp
 from subprocess import check_output
 import h5py
 import re
 import math
 import pandas as pd
 import pickle
-from os.path import splitext, basename, exists, abspath, isfile, getsize
+from os.path import splitext, basename, isfile
 from sklearn.decomposition import PCA
 from sklearn.manifold import TSNE
 from sklearn import preprocessing
 from sklearn.cluster import KMeans, SpectralClustering
 from sklearn import mixture
 from keras import backend as K
-from keras.layers import Input, Dense, Lambda, Layer, Add, Multiply, BatchNormalization, Dropout, Activation, LeakyReLU, \
-    merge
+from keras.layers import Input, Dense, Lambda, Layer, Add, BatchNormalization, Dropout, Activation, merge
 from keras.models import Model, Sequential
 from keras.losses import mse, binary_crossentropy
-from keras.optimizers import Adam, RMSprop
-from sklearn.metrics import silhouette_score, davies_bouldin_score
+from keras.optimizers import Adam
+from sklearn.metrics import silhouette_score
 from sklearn.ensemble import RandomForestClassifier
 from keras.models import load_model
 
 random.seed(1)
 np.random.seed(1)
-tf.set_random_seed(1)
-session_conf = tf.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
-sess = tf.Session(graph=tf.get_default_graph(), config=session_conf)
-K.set_session(sess)
+# tf.set_random_seed(1)
+# session_conf = tf.ConfigProto(intra_op_parallelism_threads=1, inter_op_parallelism_threads=1)
+# sess = tf.Session(graph=tf.get_default_graph(), config=session_conf)
+# K.set_session(sess)
 
 
 class Encoder_GAN():
@@ -85,7 +84,7 @@ class Encoder_GAN():
 
     def train(self, df, epochs, batch_size=128, bTrain=True):
         X_train = df.values.astype(float)
-        model_path = "./model/vae.h5"
+        model_path = "./vae.h5"
         log_file = "./run.log"
         fp = open(log_file, 'w')
         if bTrain:
@@ -178,15 +177,15 @@ def main(argv=sys.argv):
 
     if args.run_mode == 'feature':
         base_file = splitext(basename(args.file_input))[0]
-        fea_save_file = './fea/' + base_file + '.fea'
+        fea_save_file = './' + base_file + '.fea'
         clinical_save_file = './clinical_PANCAN_patient_with_followup.tsv.clinical'
         df = pd.read_csv(args.file_input, header=0, index_col=0, sep='\t').T
         atac.feature_extract(df, fea_save_file, n_components=200)
 
     elif args.run_mode == 'cluster':
         base_file = splitext(basename(args.file_input))[0]
-        fea_save_file = './fea/' + base_file + '.fea'
-        out_file = './' + base_file + '.out'
+        fea_save_file = './' + base_file + '.fea'
+        out_file = './' + base_file + '.clusteratac' +str(args.cluster_num)
         clinical_save_file = './clinical_PANCAN_patient_with_followup.tsv.clinical'
         scaler = preprocessing.StandardScaler()
         if isfile(fea_save_file):
@@ -194,8 +193,8 @@ def main(argv=sys.argv):
             df = pd.read_csv(clinical_save_file, header=0, index_col=0, sep='\t')
             df = df.loc[:, ['acronym']]
             labels = atac.gmm(X.values, args.cluster_num)
-            dbi_score = davies_bouldin_score(X.values, labels)
-            print(args.cluster_num, dbi_score)
+            # dbi_score = davies_bouldin_score(X.values, labels)
+            # print(args.cluster_num, dbi_score)
             df['label'] = labels
             df.to_csv(out_file, header=True, index=True, sep='\t')
         else:
@@ -204,9 +203,9 @@ def main(argv=sys.argv):
     elif args.run_mode == 'runtime':
         method = 'atac_2'
         base_file = splitext(basename(args.file_input))[0]
-        fea_compare_file = './fea/' + base_file + '.compare'
-        tsne_input = './fea/' + base_file + '.tsne'
-        clinical_input_file = '../data/TCGA-ATAC_DataS3_PeaksAndClusters_v1.csv'
+        fea_compare_file = './' + base_file + '.compare'
+        tsne_input = './' + base_file + '.tsne'
+        clinical_input_file = 'TCGA-ATAC_DataS3_PeaksAndClusters_v1.csv'
         out_file = './' + base_file + '.' + method
         n_clusters = 2
         if isfile(args.file_input):
@@ -248,7 +247,7 @@ def main(argv=sys.argv):
         else:
             print('file does not exist!')
 
-    elif args.run_mode == 'compare':
+    elif args.run_mode == 'prepare_compare':
         method = args.other_approach
         base_file = splitext(basename(args.file_input))[0]
         fea_compare_file = './fea/' + base_file + '.compare'
@@ -290,7 +289,7 @@ def main(argv=sys.argv):
         else:
             print('file does not exist!')
 
-    elif args.run_mode == 'tsne':
+    elif args.run_mode == 'tsne_sklearn':
         base_file = splitext(basename(args.file_input))[0]
         out_file = './fea/' + base_file + '.tsne'
         fea_save_file = './fea/' + base_file + '.fea'
@@ -325,21 +324,18 @@ def main(argv=sys.argv):
         else:
             print('file does not exist!')
 
-    elif args.run_mode == 'clinical_data':
-        clinical_input = '../data/clinical_PANCAN_patient_with_followup.tsv.gz'
-        file_input = '../data/TCGA_ATAC_peak_Log2Counts_dedup_sample.gz'
-        base_file = splitext(basename(clinical_input))[0]
-        clinical_save_file = './' + base_file + '.clinical'
-        base_file = splitext(basename(args.file_input))[0]
-        out_file = './' + base_file
+    elif args.run_mode == 'preprocess':
+        clinical_input = './clinical_PANCAN_patient_with_followup.tsv.clinical'
+        file_input = './TCGA_ATAC_peak_Log2Counts_dedup_sample'
+        base_file = splitext(basename(file_input))[0]
+        df_save_file = './' + base_file + '.txt'
         # df need to be sorted first
-        df = pd.read_csv(clinical_input, header=0, sep='\t',
-                         usecols=['bcr_patient_barcode', 'acronym', 'vital_status', 'days_to_death',
-                                  'days_to_last_followup'])
-        df['status'] = np.where(df['vital_status'] == 'Dead', 1, 0)
-        df['days'] = df.apply(lambda r: r['days_to_death'] if r['status'] == 1 else r['days_to_last_followup'], axis=1)
-        df = df.loc[:, ['bcr_patient_barcode', 'acronym', 'status', 'days']]
-        X1 = pd.read_csv(file_input, header=0, index_col=0, sep='\t', compression='gzip', nrows=1)
+        if not isfile(file_input):
+            web_file ="https://atacseq.xenahubs.net/download/TCGA_ATAC_peak_Log2Counts_dedup_sample"
+            cmd = "wget %s -O %s" % (web_file, file_input)
+            check_output(cmd, shell=True)
+        df = pd.read_csv(clinical_input, header=0, sep='\t')
+        X1 = pd.read_csv(file_input, header=0, index_col=0, sep='\t')
         ids = []
         dic = {}
         for line in list(X1):
@@ -347,18 +343,38 @@ def main(argv=sys.argv):
             txt = '-'.join(tmps[0:-1])
             ids.append(txt)
             dic[txt] = line.rstrip()
-        df = df[df['bcr_patient_barcode'].isin(ids)]
-        # handle errors
-        df.loc[df.days == '[Discrepancy]', 'days'] = 766.0
-        df = df.astype(
-            dtype={"bcr_patient_barcode": str, 'acronym': str, "status": int, "days": float})
-        df['days'] = df['days'].astype(int)
-        samples = []
-        samples_short = []
+        cols_select = []
+        cols_new = []
         for sample in list(df['bcr_patient_barcode']):
-            samples.append(dic[sample])
-            samples_short.append(sample)
-        df.to_csv(clinical_save_file, header=True, index=False, sep='\t')
+            cols_select.append(dic[sample])
+            cols_new.append(sample)
+        X1 = X1.loc[:, cols_select]
+        X1.columns = cols_new
+        print(X1.shape)
+        X1.to_csv(df_save_file, header=True, index=True, sep='\t')
+
+    elif args.run_mode == 'eval':
+        base_file = splitext(basename(args.file_input))[0]
+        m_list = {}
+        clusteratac_18 = './' + base_file + '.clusteratac18'
+        clusteratac_22 = './' + base_file + '.clusteratac22'
+        kmeans_file = './' + base_file + '.kmeans'
+        tsne_file = './' + base_file + '.tsne'
+        pca_file = './' + base_file + '.pca'
+        tsne_gmm_file = './' + base_file + '.tsne_gmm'
+        spectral_file = './' + base_file + '.spectral'
+        m_list[clusteratac_18] = 'ClusterATAC_18'
+        m_list[clusteratac_22] = 'ClusterATAC_22'
+        m_list[kmeans_file] = 'Kmeans'
+        m_list[tsne_file] = 't-SNE-density'
+        m_list[tsne_gmm_file] = 't-SNE-GMM'
+        m_list[spectral_file] = 'Spectral'
+        m_list[pca_file] = 'PCA-GMM'
+        for fkey in m_list.keys():
+            if isfile(fkey):
+                print(m_list[fkey])
+                r_cmd = 'Rscript eval.R -d %s ' % (fkey)
+                os.system(r_cmd)
 
     elif args.run_mode == 'K_18':
         base_file = splitext(basename(args.file_input))[0]
@@ -397,7 +413,7 @@ def main(argv=sys.argv):
                 df_out = df_select.head(min(df_select.shape[0], top_out))
                 df_out.to_csv(out_file, header=False, index=True, sep='\t')
         else:
-            print('file does not exist!')
+            print('file id.csv does not exist!')
 
     elif args.run_mode == 'K_2':
         base_file = splitext(basename(args.file_input))[0]
