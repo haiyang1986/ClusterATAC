@@ -1,5 +1,5 @@
 # ClusterATAC
-ClusterATAC is a cancer subtype tool based on ATAC-seq profiles. The input for the framework high-dimensional ATAC-peak scores of all the tumor samples. The output is the corresponding subclass label for each sample. ClusterATAC is mainly divided into two components: 1. GAN-based feature extraction module is used to obtain abstract features from deep learning using high-dimensional original input. 2. A GMM-based clustering module for determining the number of types and the class labels corresponding to each sample. 3. Based on the original data, apply the comparison algorithms to achieve the typing results.  
+ClusterATAC is a cancer subtype tool based on ATAC-seq profiles. The input for the framework is high-dimensional omics data (such as ATAC-peak data) of all the tumor samples. The output is the corresponding subclass label for each sample. ClusterATAC is mainly divided into two components: 1. GAN-based feature extraction module is used to obtain abstract features from deep learning using high-dimensional original input data. 2. A GMM-based clustering module for determining the number of clusters and the cluster labels corresponding to the input. 
 ```{r}
 # the input raw data file is all.txt and runs the following command to finish all processes: 
 python ClusterATAC.py -i ./all.txt  
