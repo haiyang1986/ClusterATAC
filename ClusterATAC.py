@@ -37,9 +37,9 @@ os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
 
 
 class AE():
-    def __init__(self, X_shape, n_components):
-        self.epochs = 60
-        self.batch_size = 16
+    def __init__(self, X_shape, n_components, epochs=60, batch_size=64):
+        self.epochs = epochs
+        self.batch_size = batch_size
         self.n_components = n_components
         self.shape = X_shape[1]
 
@@ -63,9 +63,9 @@ class AE():
 
 
 class VAE():
-    def __init__(self, X_shape, n_components):
-        self.epochs = 60
-        self.batch_size = 16
+    def __init__(self, X_shape, n_components, epochs=60, batch_size=64):
+        self.epochs = epochs
+        self.batch_size = batch_size
         self.n_components = n_components
         self.shape = X_shape[1]
 
@@ -103,66 +103,46 @@ class VAE():
 
 
 class Encoder_GAN():
-    def __init__(self, datasets, n_latent_dim):
-        self.latent_dim = n_latent_dim
+    def __init__(self, X_shape, n_components, weight=0.001, epochs=100, batch_size=64):
+        self.latent_dim = n_components
         optimizer = Adam()
-        self.n = len(datasets)
-        self.shape = []
-        input = []
-        loss = []
-        loss_weights = []
-        output =[]
-        for i in range(self.n):
-            self.shape.append(datasets[i].shape[1])
-            loss.append('mse')
-        loss.append('binary_crossentropy')
-        self.decoder, self.disc = self.build_decoder_disc()
+        self.shape = X_shape[1]
+        self.disc = self.build_disc()
+        self.weight = weight
+        self.epochs = epochs
+        self.batch_size = batch_size
         self.disc.compile(loss='binary_crossentropy', optimizer=optimizer, metrics=['accuracy'])
         self.encoder = self.build_encoder()
-        for i in range(self.n):
-            input.append(Input(shape=(self.shape[i],)))
-            loss_weights.append(0.999/self.n)
-        loss_weights.append(0.001)
+        self.decoder = self.build_decoder()
+        input = Input(shape=(self.shape,))
         z_mean, z_log_var, z = self.encoder(input)
         output = self.decoder(z)
         validity = self.disc(z)
         self.gan = Model(input, [output, validity])
-        self.gan.compile(loss=loss, loss_weights=loss_weights, optimizer=optimizer)
+        self.gan.compile(loss=['mse', 'binary_crossentropy'],
+                         loss_weights=[1 - self.weight, self.weight],
+                         optimizer=optimizer)
 
     def build_encoder(self):
+        encoding_dim = self.latent_dim
+
         def sampling(args):
             z_mean, z_log_var = args
             return z_mean + K.exp(0.5 * z_log_var) * K.random_normal(K.shape(z_mean), seed=0)
 
-        encoding_dim = self.latent_dim
-        X = []
-        dims = []
-        denses = []
-        for i in range(self.n):
-            X.append(Input(shape=(self.shape[i],)))
-            dims.append(encoding_dim)
-        for i in range(self.n):
-            denses.append(Dense(dims[i], kernel_initializer="glorot_normal")(X[i]))
-        if self.n > 1:
-            merged_dense = concatenate(denses, axis=-1)
-        else:
-            merged_dense = denses[0]
-        model = BatchNormalization()(merged_dense)
-        model = Dense(encoding_dim, kernel_initializer="glorot_normal")(model)
+        X = Input(shape=(self.shape,))
+        model = Dense(encoding_dim, kernel_initializer="glorot_normal")(X)
+        model = BatchNormalization()(model)
         z_mean = Dense(encoding_dim, kernel_initializer="glorot_normal")(model)
         z_log_var = Dense(encoding_dim, kernel_initializer="glorot_normal")(model)
         z = Lambda(sampling, output_shape=(encoding_dim,), name='z')([z_mean, z_log_var])
-        return Model(X, [z_mean, z_log_var, z])
+        return Model([X], [z_mean, z_log_var, z])
 
-    def build_decoder_disc(self):
-        denses = []
+    def build_decoder(self):
         X = Input(shape=(self.latent_dim,))
-        for i in range(self.n):
-            denses.append(Dense(self.shape[i], kernel_initializer="glorot_normal")(X))
-        dec = Dense(1, activation='sigmoid', kernel_initializer="glorot_normal")(X)
-        m_decoder = Model(X, denses)
-        m_disc = Model(X, dec)
-        return m_decoder, m_disc
+        model = Dense(self.shape, kernel_initializer="glorot_normal")(X)
+        model = Model(X, model)
+        return model
 
     def build_disc(self):
         X = Input(shape=(self.latent_dim,))
@@ -170,32 +150,30 @@ class Encoder_GAN():
         output = Model(X, dec)
         return output
 
-    def train(self, X_train, epochs, batch_size=128, bTrain=True):
+    def train(self, df, bTrain=True):
+        X_train = df.values.astype(float)
         model_path = "./vae.h5"
         log_file = "./run.log"
         fp = open(log_file, 'w')
         if bTrain:
             # GAN
-            valid = np.ones((batch_size, 1))
-            fake = np.zeros((batch_size, 1))
-            for epoch in range(epochs):
+            valid = np.ones((self.batch_size, 1))
+            fake = np.zeros((self.batch_size, 1))
+            for epoch in range(self.epochs):
                 #  Train Discriminator
-                data = []
-                idx = np.random.randint(0, X_train[0].shape[0], batch_size)
-                for i in range(self.n):
-                    data.append(X_train[i][idx])
+                idx = np.random.randint(0, X_train.shape[0], self.batch_size)
+                data = X_train[idx]
                 latent_fake = self.encoder.predict(data)[2]
-                latent_real = np.random.normal(size=(batch_size, self.latent_dim))
+                latent_real = np.random.normal(size=(self.batch_size, self.latent_dim))
                 d_loss_real = self.disc.train_on_batch(latent_real, valid)
                 d_loss_fake = self.disc.train_on_batch(latent_fake, fake)
                 d_loss = 0.5 * np.add(d_loss_real, d_loss_fake)
-                outs= data + [valid]
                 #  Train Encoder_GAN
-                g_loss = self.gan.train_on_batch(data, outs)
+                g_loss = self.gan.train_on_batch(data, [data, valid])
                 print("%d [D loss: %f, acc: %.2f%%] [G loss: %f, mse: %f]" % (
                     epoch + 1, d_loss[0], 100 * d_loss[1], g_loss[0], g_loss[1]))
                 # fp.write("%f\t%f\n" % (g_loss[0], d_loss[0]))
-                if (abs(d_loss[1] - 0.5) < 0.01 and epoch > epochs - 10):
+                if (abs(d_loss[1] - 0.5) < 0.01 and epoch > self.epochs - 10):
                     break
             fp.close()
             # self.encoder.save(model_path)
@@ -206,16 +184,18 @@ class Encoder_GAN():
 
 
 class ClusterATAC(object):
-    def __init__(self, model_path='./model/'):
+    def __init__(self, model_path='./model/', n_latent_dim=200, weight=1e-3, epochs=60, batch_size=64):
         self.model_path = model_path
         self.score_path = './score/'
-        self.epochs = 100
-        self.batch_size = 128
+        self.epochs = epochs
+        self.batch_size = batch_size
+        self.weight = weight
+        self.n_components = n_latent_dim
 
     # feature extract
-    def feature_gan(self, df_ori, save_file, n_components=100, b_decomposition=True):
+    def feature_gan(self, df_ori, save_file, b_decomposition=True):
         if b_decomposition:
-            X = self.encoder_gan(df_ori, n_components)
+            X = self.encoder_gan(df_ori)
             fea = pd.DataFrame(data=X, index=df_ori.index,
                                columns=map(lambda x: 'v' + str(x), range(X.shape[1])))
         else:
@@ -224,9 +204,9 @@ class ClusterATAC(object):
         print("feature extract finished!")
         return True
 
-    def feature_vae(self, df_ori, save_file, n_components=100, b_decomposition=True):
+    def feature_vae(self, df_ori, save_file, b_decomposition=True):
         if b_decomposition:
-            X = self.encoder_vae(df_ori, n_components)
+            X = self.encoder_vae(df_ori)
             print(X)
             fea = pd.DataFrame(data=X, index=df_ori.index,
                                columns=map(lambda x: 'v' + str(x), range(X.shape[1])))
@@ -236,9 +216,9 @@ class ClusterATAC(object):
         print("feature extract finished!")
         return True
 
-    def feature_ae(self, df_ori, save_file, n_components=100, b_decomposition=True):
+    def feature_ae(self, df_ori, save_file, b_decomposition=True):
         if b_decomposition:
-            X = self.encoder_ae(df_ori, n_components)
+            X = self.encoder_ae(df_ori)
             print(X)
             fea = pd.DataFrame(data=X, index=df_ori.index,
                                columns=map(lambda x: 'v' + str(x), range(X.shape[1])))
@@ -248,8 +228,8 @@ class ClusterATAC(object):
         print("feature extract finished!")
         return True
 
-    def cluster(self, df_ori, n_components=200, n_clusters=18):
-        X = self.encoder_gan(df_ori, n_components)
+    def cluster(self, df_ori, n_clusters=18):
+        X = self.encoder_gan(df_ori)
         model = mixture.GaussianMixture(n_components=n_clusters, covariance_type='diag')
         return model.fit_predict(X)
 
@@ -257,17 +237,16 @@ class ClusterATAC(object):
         X.fillna(X.mean())
         return X
 
-    def encoder_gan(self, df, n_components=100):
-        ldata = [df.values.astype(float)]
-        egan = Encoder_GAN(ldata, n_components)
-        return egan.train(ldata, 60, 64)
+    def encoder_gan(self, df):
+        egan = Encoder_GAN(df.shape, self.n_components, self.weight, self.epochs, self.batch_size)
+        return egan.train(df)
 
-    def encoder_vae(self, df, n_components=100):
-        vae = VAE(df.shape, n_components)
+    def encoder_vae(self, df):
+        vae = VAE(df.shape, self.n_components, self.epochs, self.batch_size)
         return vae.train(df)
 
-    def encoder_ae(self, df, n_components=100):
-        ae = AE(df.shape, n_components)
+    def encoder_ae(self, df):
+        ae = AE(df.shape, self.n_components, self.epochs, self.batch_size)
         return ae.train(df)
 
     def tsne(self, X):
@@ -275,7 +254,7 @@ class ClusterATAC(object):
         return model.fit_transform(X)
 
     def pca(self, X):
-        fea_model = PCA(n_components=200)
+        fea_model = PCA(self.n_components)
         return fea_model.fit_transform(X)
 
     def gmm(self, X, n_clusters=18):
@@ -290,26 +269,30 @@ def main(argv=sys.argv):
     parser.add_argument("-i", dest='file_input', default="./TCGA_ATAC_peak_Log2Counts_dedup_sample.txt",
                         help="file input")
     parser.add_argument("-m", dest='run_mode', default="feature", help="run_mode: feature, cluster")
-    parser.add_argument("-n", dest='cluster_num', type=int, default=18, help="cluster num")
+    parser.add_argument("-k", dest='cluster_num', type=int, default=18, help="cluster num")
     parser.add_argument("-o", dest='output_path', default="./score/", help="file output")
-    parser.add_argument("-p", dest='other_approach', default="spectral", help="kmeans, spectral, tsne_gmm, tsne")
+    parser.add_argument("-p", dest='approach', default="spectral", help="kmeans, spectral, tsne_gmm, tsne")
+    parser.add_argument("-e", dest='epochs', type=int, default=30, help="Number of iterations")
+    parser.add_argument("-w", dest='disc_weight', type=float, default=1e-3, help="weight")
+    parser.add_argument("-d", dest='latent_dim', type=int, default=200, help="latent dim")
+    parser.add_argument("-b", dest='batch_size', type=int, default=64, help="latent dim")
     args = parser.parse_args()
     model_path = './model/'
-    atac = ClusterATAC(model_path)
+    atac = ClusterATAC(model_path, n_latent_dim=args.latent_dim, weight=args.disc_weight, epochs=args.epochs,
+                       batch_size=args.batch_size)
 
     if args.run_mode == 'feature':
         base_file = splitext(basename(args.file_input))[0]
         fea_save_file = './data/' + base_file + '.fea'
         clinical_save_file = './data/clinical_PANCAN_patient_with_followup.tsv.clinical'
         df = pd.read_csv(args.file_input, header=0, index_col=0, sep='\t').T
-        atac.feature_gan(df, fea_save_file, n_components=200)
+        atac.feature_gan(df, fea_save_file)
 
     elif args.run_mode == 'cluster':
-        base_file = splitext(basename(args.file_input))[0]
-        fea_save_file = './data/' + base_file + '.fea'
+        base_file = 'all'
+        fea_save_file = './fea/' + base_file + '.clusteratac'
         out_file = './results/' + base_file + '.clusteratac' + str(args.cluster_num)
         clinical_save_file = './data/clinical_PANCAN_patient_with_followup.tsv.clinical'
-        scaler = preprocessing.StandardScaler()
         if isfile(fea_save_file):
             X = pd.read_csv(fea_save_file, header=0, index_col=0, sep='\t')
             df = pd.read_csv(clinical_save_file, header=0, index_col=0, sep='\t')
@@ -317,8 +300,9 @@ def main(argv=sys.argv):
             labels = atac.gmm(X.values, args.cluster_num)
             # dbi_score = davies_bouldin_score(X.values, labels)
             # print(args.cluster_num, dbi_score)
-            df['label'] = labels
-            df.to_csv(out_file, header=True, index=True, sep='\t')
+            X['label'] = labels + 1
+            X = X.loc[:, ['label']]
+            X.to_csv(out_file, header=True, index=True, sep='\t')
         else:
             print('file does not exist!')
 
@@ -348,7 +332,7 @@ def main(argv=sys.argv):
                 labels = model.fit_predict(mat)
                 print(time.time() - time_start)
             elif method == 'pca_gmm':
-                mat = PCA(n_components=200).fit_transform(X)
+                mat = PCA(n_components=args.latent_dim).fit_transform(X)
                 model = mixture.GaussianMixture(n_components=n_clusters, covariance_type='diag')
                 labels = model.fit_predict(mat)
                 print(time.time() - time_start)
@@ -358,19 +342,19 @@ def main(argv=sys.argv):
                 check_output(cmd, shell=True)
                 print(time.time() - time_start)
             elif method == 'atac_18':
-                atac.cluster(X, n_components=200, n_clusters=18)
+                atac.cluster(X, n_clusters=18)
                 print(time.time() - time_start)
             elif method == 'atac_22':
-                labels = atac.cluster(X, n_components=200, n_clusters=22)
+                labels = atac.cluster(X, n_clusters=22)
                 print(time.time() - time_start)
             elif method == 'atac_2':
-                labels = atac.cluster(X, n_components=200, n_clusters=2)
+                labels = atac.cluster(X, n_clusters=2)
                 print(time.time() - time_start)
         else:
             print('file does not exist!')
 
     elif args.run_mode == 'prepare_compare':
-        method = args.other_approach
+        method = args.approach
         base_file = splitext(basename(args.file_input))[0]
         fea_compare_file = './' + base_file + '.compare'
         tsne_input = './' + base_file + '.tsne'
@@ -411,7 +395,7 @@ def main(argv=sys.argv):
         else:
             print('file does not exist!')
 
-    elif args.run_mode == 'tsne_sklearn':
+    elif args.run_mode == 'tsne':
         base_file = splitext(basename(args.file_input))[0]
         out_file = './' + base_file + '.tsne'
         fea_save_file = './data/' + base_file + '.fea'
@@ -431,7 +415,7 @@ def main(argv=sys.argv):
 
     elif args.run_mode == 'pca':
         base_file = splitext(basename(args.file_input))[0]
-        out_file = './' + base_file + '.pca'
+        out_file = './fea/' + base_file + '.pca'
         clinical_save_file = './data/clinical_PANCAN_patient_with_followup.tsv.clinical'
         if isfile(args.file_input):
             X = pd.read_csv(args.file_input, header=0, index_col=0, sep='\t').T
@@ -477,66 +461,61 @@ def main(argv=sys.argv):
         # X1 = X1.T
         # atac.feature_extract(X1, fea_save_file, n_components=200)
 
-    elif args.run_mode == 'train':
-        method = args.other_approach
+    elif args.run_mode == 'all':
+        method = args.approach
         clinical_input = './data/clinical_PANCAN_patient_with_followup.tsv.clinical'
         file_input = './data/TCGA_ATAC_peak_Log2Counts_dedup_sample'
         base_file = splitext(basename(file_input))[0]
-        df_save_file = './' + base_file + '.all'
-        fea_save_file = './data/' + base_file + '_all.fea'
+        df_save_file = 'all.atac'
+        if method == 'clusteratac' or method == 'vae' or method == 'ae':
+            fea_save_file = './fea/'  + 'all.' + method
+        else:
+            fea_save_file = './fea/' + 'all.pca'
         # df need to be sorted first
-        if not isfile(df_save_file):
-            if not isfile(file_input):
-                web_file = "https://atacseq.xenahubs.net/download/TCGA_ATAC_peak_Log2Counts_dedup_sample"
-                cmd = "wget %s -O %s 1>/dev/null" % (web_file, file_input)
-                check_output(cmd, shell=True)
+        if not isfile(fea_save_file):
+            if not isfile(df_save_file):
+                if not isfile(file_input):
+                    web_file = "https://atacseq.xenahubs.net/download/TCGA_ATAC_peak_Log2Counts_dedup_sample"
+                    cmd = "wget %s -O %s 1>/dev/null" % (web_file, file_input)
+                    check_output(cmd, shell=True)
+                else:
+                    df = pd.read_csv(clinical_input, header=0, sep='\t')
+                    X1 = pd.read_csv(file_input, header=0, index_col=0, sep='\t')
+                    ids = []
+                    dic = {}
+                    for line in list(X1):
+                        tmps = line.rstrip().split('-')
+                        txt = '-'.join(tmps[0:-1])
+                        ids.append(txt)
+                        dic[txt] = line.rstrip()
+                    cols_select = []
+                    cols_new = []
+                    for sample in list(df['bcr_patient_barcode']):
+                        cols_select.append(dic[sample])
+                        cols_new.append(sample)
+                    X1 = X1.loc[:, cols_select]
+                    X1.columns = cols_new
+                    X1.to_csv(df_save_file, header=True, index=True, sep='\t')
+            X = pd.read_csv(df_save_file, header=0, index_col=0, sep='\t')
+            print("Input file loaded!")
+            X = X.T
+            if method == 'clusteratac':
+                atac.feature_gan(X, fea_save_file)
+            elif method == 'vae':
+                atac.feature_vae(X, fea_save_file)
+            elif method == 'ae':
+                atac.feature_ae(X, fea_save_file)
             else:
-                df = pd.read_csv(clinical_input, header=0, sep='\t')
-                X1 = pd.read_csv(file_input, header=0, index_col=0, sep='\t')
-                ids = []
-                dic = {}
-                for line in list(X1):
-                    tmps = line.rstrip().split('-')
-                    txt = '-'.join(tmps[0:-1])
-                    ids.append(txt)
-                    dic[txt] = line.rstrip()
-                cols_select = []
-                cols_new = []
-                for sample in list(df['bcr_patient_barcode']):
-                    cols_select.append(dic[sample])
-                    cols_new.append(sample)
-                X1 = X1.loc[:, cols_select]
-                X1.columns = cols_new
-                X1.to_csv(df_save_file, header=True, index=True, sep='\t')
-        X = pd.read_csv(df_save_file, header=0, index_col=0, sep='\t')
-        print("Input file loaded!")
-        X = X.T
-        if method == 'gan':
-            atac.feature_gan(X, fea_save_file, n_components=200)
-        elif method == 'vae':
-            atac.feature_vae(X, fea_save_file, n_components=200)
-        elif method == 'ae':
-            atac.feature_ae(X, fea_save_file, n_components=200)
-        else:
-            mat = X.values.astype(float)
-            labels = PCA(n_components=200).fit_transform(mat)
-            fea = pd.DataFrame(data=labels, index=X.index,
-                               columns=map(lambda x: 'v' + str(x), range(labels.shape[1])))
-            fea.to_csv(fea_save_file, header=True, index=True, sep='\t')
-            # elif method =='tsne':
-            #     mat = X.values.astype(float)
-            #     labels = TSNE(n_components=2).fit_transform(mat)
-            #     fea = pd.DataFrame(data=labels, index=X.index,
-            #                        columns=map(lambda x: 'v' + str(x), range(labels.shape[1])))
-            #     fea.to_csv(fea_save_file, header=True, index=True, sep='\t')
-            # else:
-            #     X.to_csv(fea_save_file, header=True, index=True, sep='\t')
-
+                mat = X.values.astype(float)
+                labels = PCA(n_components=args.latent_dim).fit_transform(mat)
+                fea = pd.DataFrame(data=labels, index=X.index,
+                                   columns=map(lambda x: 'v' + str(x), range(labels.shape[1])))
+                fea.to_csv(fea_save_file, header=True, index=True, sep='\t')
         base_file = splitext(basename(args.file_input))[0]
-        if method == 'gan':
-            out_file = './results/' + base_file + '_all.clusteratac'
+        if method == 'pca':
+            return
         else:
-            out_file = './results/' + base_file + '_all.' + method
+            out_file = './results/' + 'all.' + method
         clinical_save_file = './data/clinical_PANCAN_patient_with_followup.tsv.clinical'
         X = pd.read_csv(fea_save_file, header=0, index_col=0, sep='\t')
         print(X.shape)
@@ -544,72 +523,62 @@ def main(argv=sys.argv):
         df = df.loc[:, ['acronym']]
         print(df.shape)
         if method == 'kmeans':
-            model = KMeans(n_clusters=18, random_state=0)
+            model = KMeans(n_clusters=args.cluster_num, random_state=0)
             labels = model.fit_predict(X.values)
         elif method == 'spectral':
-            model = SpectralClustering(n_clusters=18, assign_labels="discretize", random_state=0, n_init=2)
+            model = SpectralClustering(n_clusters=args.cluster_num, assign_labels="discretize", random_state=0, n_init=2)
             labels = model.fit_predict(X.values)
         else:
-            labels = atac.gmm(X.values, 18)
-        print(labels.shape)
-        # dbi_score = davies_bouldin_score(X.values, labels)
-        # print(args.cluster_num, dbi_score)
-        df['label'] = labels
-        # df = df[df['acronym'] == 'BRCA']
-        df.to_csv(out_file, header=True, index=True, sep='\t')
+            labels = atac.gmm(X.values, args.cluster_num)
+        X['label'] = labels + 1
+        X = X.loc[:, ['label']]
+        X.to_csv(out_file, header=True, index=True, sep='\t')
 
-    elif args.run_mode == 'brca':
+    elif args.run_mode == 'BRCA':
+        method = args.approach
         clinical_input = './data/clinical_PANCAN_patient_with_followup.tsv.clinical'
-        file_input = './data/TCGA_ATAC_peak_Log2Counts_dedup_sample'
-        base_file = splitext(basename(file_input))[0]
-        df_save_file = './' + base_file + '.brca'
-        fea_save_file = './data/' + base_file + '_brca.fea'
+        df_save_file = './BRCA.rna'
+        base_file = splitext(basename(df_save_file))[0]
+        if method == 'clusteratac' or method == 'vae' or method == 'ae':
+            fea_save_file = './fea/' + base_file + '.' + method
+        else:
+            fea_save_file = './fea/' + base_file + '.pca'
         # df need to be sorted first
-        if not isfile(df_save_file):
-            if not isfile(file_input):
-                web_file = "https://atacseq.xenahubs.net/download/TCGA_ATAC_peak_Log2Counts_dedup_sample"
-                cmd = "wget %s -O %s 1>/dev/null" % (web_file, file_input)
-                check_output(cmd, shell=True)
-            df = pd.read_csv(clinical_input, header=0, sep='\t')
-            df = df[df['acronym'].isin(['BRCA'])]
-            X1 = pd.read_csv(file_input, header=0, index_col=0, sep='\t')
-            ids = []
-            dic = {}
-            for line in list(X1):
-                tmps = line.rstrip().split('-')
-                txt = '-'.join(tmps[0:-1])
-                ids.append(txt)
-                dic[txt] = line.rstrip()
-            cols_select = []
-            cols_new = []
-            for sample in list(df['bcr_patient_barcode']):
-                cols_select.append(dic[sample])
-                cols_new.append(sample)
-            X1 = X1.loc[:, cols_select]
-            X1.columns = cols_new
-            X1.to_csv(df_save_file, header=True, index=True, sep='\t')
         if not isfile(fea_save_file):
-            X1 = pd.read_csv(df_save_file, header=0, index_col=0, sep='\t')
-            print("Input file loaded!")
-            X1 = X1.T
-            atac.feature_gan(X1, fea_save_file, n_components=2)
-        base_file = splitext(basename(args.file_input))[0]
-        out_file = './results/' + base_file + '_brca.clusteratac'
+            X = pd.read_csv(df_save_file, header=0, index_col=0, sep=',')
+            print(X.shape)
+            X = X.T
+            if method == 'clusteratac':
+                atac.feature_gan(X, fea_save_file)
+            elif method == 'vae':
+                atac.feature_vae(X, fea_save_file)
+            elif method == 'ae':
+                atac.feature_ae(X, fea_save_file)
+            else:
+                mat = X.values.astype(float)
+                labels = PCA(n_components=args.latent_dim).fit_transform(mat)
+                fea = pd.DataFrame(data=labels, index=X.index,
+                                   columns=map(lambda x: 'v' + str(x), range(labels.shape[1])))
+                print(fea.shape)
+                fea.to_csv(fea_save_file, header=True, index=True, sep='\t')
+        if method == 'pca':
+            return
+        else:
+            out_file = './results/' + base_file + '.' + method
         clinical_save_file = './data/clinical_PANCAN_patient_with_followup.tsv.clinical'
         X = pd.read_csv(fea_save_file, header=0, index_col=0, sep='\t')
-        df = pd.read_csv(clinical_save_file, header=0, index_col=0, sep='\t')
-        df = df[df['acronym'].isin(['BRCA'])]
-        cols_new = []
-        for sample in list(df.index):
-            cols_new.append(sample)
-        X = X.loc[cols_new, :]
-        df = df.loc[:, ['acronym']]
-        labels = atac.gmm(X.values, 2)
-        # dbi_score = davies_bouldin_score(X.values, labels)
-        # print(args.cluster_num, dbi_score)
-        df['label'] = labels
-        # df = df[df['acronym'] == 'BRCA']
-        df.to_csv(out_file, header=True, index=True, sep='\t')
+        if method == 'kmeans':
+            model = KMeans(n_clusters=5, random_state=0)
+            labels = model.fit_predict(X.values)
+        elif method == 'spectral':
+            model = SpectralClustering(n_clusters=5, assign_labels="discretize", random_state=0, n_init=2)
+            labels = model.fit_predict(X.values)
+        else:
+            labels = atac.gmm(X.values, 5)
+        print(labels.shape)
+        X['label'] = labels + 1
+        X = X.loc[:, ['label']]
+        X.to_csv(out_file, header=True, index=True, sep='\t')
 
     elif args.run_mode == 'eval':
         base_file = splitext(basename(args.file_input))[0]
